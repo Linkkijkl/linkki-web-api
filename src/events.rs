@@ -2,6 +2,7 @@ use std::str::FromStr;
 
 use crate::types::Error;
 use anyhow::anyhow;
+use cached::proc_macro::cached;
 use chrono::{Date, DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
 use chrono_tz::{Tz, UTC};
 use icalendar::{
@@ -9,6 +10,7 @@ use icalendar::{
 };
 use reqwest::StatusCode;
 use serde::Serialize;
+use std::time::Duration;
 use warp::{Filter, Reply, filters::BoxedFilter, reject};
 
 async fn fetch_calendar(calendar_url: &str) -> anyhow::Result<Calendar> {
@@ -18,13 +20,13 @@ async fn fetch_calendar(calendar_url: &str) -> anyhow::Result<Calendar> {
     Ok(calendar)
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct Location {
     string: String,
     url: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 struct Event {
     summary: String,
     date: String,
@@ -66,7 +68,69 @@ fn to_event_date(datetime: DatePerhapsTime) -> Option<EventDate> {
     }
 }
 
-async fn events(amount: usize) -> Result<impl Reply, warp::Rejection> {
+#[derive(Clone)]
+struct Space {
+    space_label: String,
+    id: String,
+}
+
+#[cached(
+    time = 600,
+    time_refresh = true,
+    sync_writes = "default",
+    result = true
+)]
+async fn fetch_spaces() -> anyhow::Result<Vec<Space>> {
+    let url: &'static str = "https://navi.jyu.fi/api/spaces";
+    let request = reqwest::get(url).await?;
+    let text_content = request.text().await?;
+    let json: serde_json::Value = serde_json::from_str(&text_content)?;
+    let spaces = json
+        .as_array()
+        .ok_or_else(|| anyhow!("spaces are in an unrecognized format"))?;
+    let parsed_spaces = spaces
+        .iter()
+        .flat_map(|value| {
+            value
+                .as_object()
+                .map(|dict| match (dict.get("spaceLabel"), dict.get("id")) {
+                    (
+                        Some(serde_json::Value::String(space_label)),
+                        Some(serde_json::Value::String(id)),
+                    ) => vec![Space {
+                        space_label: space_label.to_string(),
+                        id: id.to_string(),
+                    }],
+                    _ => vec![],
+                })
+                .unwrap_or_else(std::vec::Vec::new)
+        })
+        .collect::<Vec<Space>>();
+    Ok(parsed_spaces)
+}
+
+fn url_for_location(location: &str, spaces: &Vec<Space>) -> String {
+    // navi.jyu.fi links for locations begining with university space codes (case sensitive!)
+    for space in spaces {
+        if location.starts_with(&space.space_label) {
+            return format!("https://navi.jyu.fi/space/{}", space.id);
+        }
+    }
+
+    // Link to Open Street Map by default
+    format!(
+        "https://osm.org/search?query={}",
+        urlencoding::encode(location)
+    )
+}
+
+#[cached(
+    time = 600,
+    time_refresh = true,
+    sync_writes = "default",
+    result = true
+)]
+async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
     let calendar_result = fetch_calendar(
         "https://calendar.google.com/calendar/ical/c_g2eqt2a7u1fc1pahe2o0ecm7as%40group.calendar.google.com/public/basic.ics"
     ).await;
@@ -80,6 +144,8 @@ async fn events(amount: usize) -> Result<impl Reply, warp::Rejection> {
         }
     };
 
+    let spaces = fetch_spaces().await.unwrap_or_default();
+
     let mut event_components: Vec<&icalendar::Event> = calendar
         .iter()
         // Filter out components other than event
@@ -91,17 +157,15 @@ async fn events(amount: usize) -> Result<impl Reply, warp::Rejection> {
         .filter(|event| {
             let current_time: DateTime<Local> = Local::now();
             match event.get_end().map(to_event_date) {
-                Some(Some(end_time)) => {
-                    match end_time {
-                        EventDate::Date(end_date) => {
-                            current_time.num_days_from_ce() <= end_date.num_days_from_ce()
-                        }
-                        EventDate::DateTimeUtc(end_time) => {
-                            current_time.timestamp() <= end_time.timestamp()
-                        }
+                Some(Some(end_time)) => match end_time {
+                    EventDate::Date(end_date) => {
+                        current_time.num_days_from_ce() <= end_date.num_days_from_ce()
                     }
-                }
-                _ => false
+                    EventDate::DateTimeUtc(end_time) => {
+                        current_time.timestamp() <= end_time.timestamp()
+                    }
+                },
+                _ => false,
             }
         })
         .collect();
@@ -111,21 +175,27 @@ async fn events(amount: usize) -> Result<impl Reply, warp::Rejection> {
             Some(Some(end_time)) => {
                 match end_time {
                     EventDate::Date(end_date) => {
-                        let end_date_local = Local.with_ymd_and_hms(end_date.year(), end_date.month(), end_date.day(), 0, 0, 0).unwrap(); // TODO: Remove unwrap
+                        let end_date_local = Local
+                            .with_ymd_and_hms(
+                                end_date.year(),
+                                end_date.month(),
+                                end_date.day(),
+                                0,
+                                0,
+                                0,
+                            )
+                            .unwrap(); // TODO: Remove unwrap
                         end_date_local.timestamp()
                     }
-                    EventDate::DateTimeUtc(end_time) => {
-                        end_time.timestamp()
-                    }
+                    EventDate::DateTimeUtc(end_time) => end_time.timestamp(),
                 }
             }
-            _ => unreachable!()
+            _ => unreachable!(),
         }
     });
 
     let events: Vec<Event> = event_components
         .iter()
-        .take(amount)
         .flat_map(|event| {
             // Extract required values from event
             let (summary, start, end) = match (
@@ -137,7 +207,6 @@ async fn events(amount: usize) -> Result<impl Reply, warp::Rejection> {
                 // Skip event if required values are missing
                 _ => return vec![],
             };
-            println!("{summary}: start: {:?} end: {:?}", start, end);
 
             // Extract optional values from events
             let (description, location) = (
@@ -175,7 +244,7 @@ async fn events(amount: usize) -> Result<impl Reply, warp::Rejection> {
             };
 
             let location_with_link = location.map(|location| Location {
-                url: format!("https://osm.org/search?query={}", urlencoding::encode(&location)),
+                url: url_for_location(&location, &spaces),
                 string: location,
             });
 
@@ -187,14 +256,16 @@ async fn events(amount: usize) -> Result<impl Reply, warp::Rejection> {
             }]
         })
         .collect();
+    
+    Ok(events)
+}
 
+async fn events() -> Result<impl Reply, warp::Rejection> {
+    let events = get_events().await?;
     let json = warp::reply::json(&events);
     Ok(warp::reply::with_status(json, StatusCode::OK))
 }
 
 pub fn filter() -> BoxedFilter<(impl Reply,)> {
-    warp::path("events")
-        .and(warp::path::param().and_then(events))
-        .or(warp::any().and_then(|| events(10)))
-        .boxed()
+    warp::path!("api" / "events").and_then(events).boxed()
 }
