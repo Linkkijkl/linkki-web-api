@@ -6,3 +6,11 @@ edition = "2024"
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
 warp = { version = "0.4", features = ["server"] }
+reqwest = { version = "0.12", features = ["json", "stream"] }
+icalendar = { version = "0.17.5", features = ["chrono-tz"] }
+serde = { version = "1.0.228", features = ["derive"] }
+anyhow = "1.0.100"
+serde_json = "1.0.145"
+chrono = "0.4.42"
+chrono-tz = "0.10.4"
+urlencoding = "2.1.3"
