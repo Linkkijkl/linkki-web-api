@@ -1,5 +1,5 @@
 FROM rust:alpine AS builder
-RUN apk add --no-cache musl-dev 
+RUN apk add --no-cache musl-dev openssl-dev
 WORKDIR /app
 
 # Backend
