@@ -1,5 +1,5 @@
 FROM rust:alpine AS builder
-RUN apk add --no-cache musl-dev openssl-dev
+RUN apk add --no-cache build-base openssl-dev
 WORKDIR /app
 
 # Backend
@@ -11,8 +11,8 @@ RUN cargo build --release --bin linkki-web-backend
 
 # Final container
 FROM alpine AS runtime
+RUN apk add --no-cache libgcc
 WORKDIR /app
 COPY --from=builder /app/target/release/linkki-web-backend .
 USER 1000
 CMD [ "./linkki-web-backend" ]
-
