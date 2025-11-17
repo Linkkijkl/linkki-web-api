@@ -256,7 +256,7 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
             }]
         })
         .collect();
-    
+
     Ok(events)
 }
 
