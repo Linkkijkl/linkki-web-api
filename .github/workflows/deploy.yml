@@ -22,7 +22,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           push: true
-          tags: ghcr.io/linkkijkl/linkki-web-backend:latest
+          tags: ghcr.io/linkkijkl/linkki-web-api:latest
       
       - name: Pull and install new image in remote server
         uses: appleboy/ssh-action@master

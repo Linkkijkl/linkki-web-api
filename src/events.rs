@@ -3,13 +3,14 @@ use std::str::FromStr;
 use crate::types::Error;
 use anyhow::anyhow;
 use cached::proc_macro::cached;
-use chrono::{Date, DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
-use chrono_tz::{Tz, UTC};
+use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
+use chrono_tz::Tz;
 use icalendar::{
     Calendar, CalendarComponent, CalendarDateTime, Component, DatePerhapsTime, EventLike,
 };
 use reqwest::StatusCode;
 use serde::Serialize;
+use serde_with::skip_serializing_none;
 use std::time::Duration;
 use warp::{Filter, Reply, filters::BoxedFilter, reject};
 
@@ -26,6 +27,7 @@ struct Location {
     url: String,
 }
 
+#[skip_serializing_none]
 #[derive(Serialize, Clone)]
 struct Event {
     summary: String,
@@ -223,19 +225,20 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
                     }
                 }
                 (EventDate::DateTimeUtc(start), EventDate::DateTimeUtc(end)) => {
-                    let local_start: DateTime<Local> = DateTime::from(start);
-                    if end.signed_duration_since(local_start).num_days() < 1 {
+                    let local_start = start.with_timezone(&Local);
+                    let local_end = end.with_timezone(&Local);
+                    if local_end.signed_duration_since(local_start).num_days() < 1 {
                         format!(
                             "{} {} - {}",
-                            start.format("%d/%m/%Y"),
-                            start.format("%H:%M"),
-                            end.format("%H:%M")
+                            local_start.format("%d/%m/%Y"),
+                            local_start.format("%H:%M"),
+                            local_end.format("%H:%M")
                         )
                     } else {
                         format!(
                             "{} - {}",
-                            start.format("%d/%m/%Y %H:%M"),
-                            end.format("%d/%m %H:%M")
+                            local_start.format("%d/%m/%Y %H:%M"),
+                            local_end.format("%d/%m %H:%M")
                         )
                     }
                 }
@@ -267,5 +270,5 @@ async fn events() -> Result<impl Reply, warp::Rejection> {
 }
 
 pub fn filter() -> BoxedFilter<(impl Reply,)> {
-    warp::path!("api" / "events").and_then(events).boxed()
+    warp::path("events").and_then(events).boxed()
 }
