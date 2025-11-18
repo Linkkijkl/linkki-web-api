@@ -1,13 +1,13 @@
 use serde::Serialize;
-use warp::Filter;
 use std::convert::Infallible;
+use warp::Filter;
 use warp::http::StatusCode;
 use warp::{Rejection, Reply};
 
 use crate::types::Error;
 
-pub mod types;
 mod events;
+pub mod types;
 
 /// An API error serializable to JSON.
 #[derive(Serialize)]
@@ -22,9 +22,12 @@ pub async fn handle_rejection(err: Rejection) -> Result<impl Reply, Infallible> 
 
     if err.is_not_found() {
         code = StatusCode::NOT_FOUND;
-        message = "404 - Not found"; 
+        message = "404 - Not found";
     } else if let Some(error) = err.find::<Error>() {
-        eprintln!("{}", serde_json::to_string_pretty(&error).unwrap_or_default());
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&error).unwrap_or_default()
+        );
         code = StatusCode::INTERNAL_SERVER_ERROR;
         message = &error.message;
     } else {
@@ -45,6 +48,9 @@ async fn main() {
     let routes = warp::any()
         .and(events::filter())
         .or(warp::path::end().map(|| "Hello world!"))
+        .map(|reply| {
+            warp::reply::with_header(reply, "Access-Control-Allow-Origin", "*")
+        })
         .recover(handle_rejection);
 
     warp::serve(routes).run(([0, 0, 0, 0], 3030)).await;
