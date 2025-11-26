@@ -32,6 +32,7 @@ struct Location {
 struct Event {
     summary: String,
     date: String,
+    start_iso8601: String,
     location: Option<Location>,
     description: Option<String>,
 }
@@ -216,15 +217,18 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
                 event.get_location().map(String::from),
             );
 
-            let date_string = match (start, end) {
+            let start_iso8601;
+            let date_string = match (&start, end) {
                 (EventDate::Date(start), EventDate::Date(end)) => {
-                    if end.signed_duration_since(start).num_days() == 1 {
+                    start_iso8601 = format!("{}", start.format("%Y-%m-%d"));
+                    if end.signed_duration_since(*start).num_days() == 1 {
                         format!("{}", start.format("%d/%m/%Y"))
                     } else {
                         format!("{} - {}", start.format("%d/%m/%Y"), end.format("%d/%m/%Y"))
                     }
                 }
                 (EventDate::DateTimeUtc(start), EventDate::DateTimeUtc(end)) => {
+                    start_iso8601 = format!("{}", start.format("%Y-%m-%d"));
                     let local_start = start.with_timezone(&Local);
                     let local_end = end.with_timezone(&Local);
                     if local_end.signed_duration_since(local_start).num_days() < 1 {
@@ -255,6 +259,7 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
                 summary,
                 description,
                 date: date_string,
+                start_iso8601,
                 location: location_with_link,
             }]
         })
