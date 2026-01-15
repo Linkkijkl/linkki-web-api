@@ -122,7 +122,7 @@ fn url_for_location(location: &str, spaces: &Vec<Space>) -> String {
 
     // Link to Open Street Map by default
     format!(
-        "https://osm.org/search?query={}",
+        "https://www.google.com/maps/search/?api=1&query={}",
         urlencoding::encode(location)
     )
 }
