@@ -78,20 +78,15 @@ struct Space {
     id: String,
 }
 
-#[cached(
-    time = 600,
-    time_refresh = true,
-    sync_writes = "default",
-    result = true
-)]
 async fn fetch_spaces() -> anyhow::Result<Vec<Space>> {
     let url: &'static str = "https://navi.jyu.fi/api/spaces";
     let request = reqwest::get(url).await?;
     let text_content = request.text().await?;
     let json: serde_json::Value = serde_json::from_str(&text_content)?;
-    let spaces = json
+
+    let spaces = json["items"]
         .as_array()
-        .ok_or_else(|| anyhow!("spaces are in an unrecognized format"))?;
+        .ok_or_else(|| anyhow!("spaces are expressed in an unrecognized format"))?;
     let parsed_spaces = spaces
         .iter()
         .flat_map(|value| {
@@ -101,7 +96,7 @@ async fn fetch_spaces() -> anyhow::Result<Vec<Space>> {
                     (
                         Some(serde_json::Value::String(space_label)),
                         Some(serde_json::Value::String(id)),
-                    ) => vec![Space {
+                    ) if !space_label.is_empty() => vec![Space {
                         space_label: space_label.to_string(),
                         id: id.to_string(),
                     }],
