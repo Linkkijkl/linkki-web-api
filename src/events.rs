@@ -9,6 +9,7 @@ use icalendar::{
     Calendar, CalendarComponent, CalendarDateTime, Component, DatePerhapsTime, EventLike,
 };
 use reqwest::StatusCode;
+use rrule::RRuleSet;
 use serde::Serialize;
 use serde_with::skip_serializing_none;
 use std::time::Duration;
@@ -116,7 +117,7 @@ fn url_for_location(location: &str, spaces: &Vec<Space>) -> String {
         }
     }
 
-    // Link to Open Street Map by default
+    // Link to Google Maps by default
     format!(
         "https://www.google.com/maps/search/?api=1&query={}",
         urlencoding::encode(location)
@@ -145,14 +146,86 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
 
     let spaces = fetch_spaces().await.unwrap_or_default();
 
-    let mut event_components: Vec<&icalendar::Event> = calendar
+    let mut event_components: Vec<icalendar::Event> = calendar
         .iter()
-        // Filter out components other than event
+        // Filter out components other than of type event
         .flat_map(|component| match component {
             CalendarComponent::Event(event) => vec![event],
             _ => vec![],
         })
-        // Filter old events out
+        // Populate recurring events
+        .flat_map(|event| {
+            // Construct a string containing only the recurrence rules of the event
+            let rrules = ["DTSTART", "RRULE", "EXRULE", "RDATE", "EXDATE"];
+            let mut ruleset_string = "".to_string();
+            for rrule in rrules {
+                match event.property_value(rrule) {
+                    Some(rule) => ruleset_string.push_str(&format!("{rrule}:{rule}\n")),
+                    None => {
+                        let multi_rules = event.multi_properties().get(rrule);
+                        if let Some(props) = multi_rules {
+                            for prop in props {
+                                ruleset_string.push_str(&format!("{rrule}:{}\n", prop.value()))
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Parse recurrence rules
+            let rrule: RRuleSet = match ruleset_string.parse() {
+                // Append only the original event if parsing recurrence fails or recurrence rules don't exist
+                Err(_) => return vec![event.to_owned()],
+                Ok(rrule) => rrule,
+            };
+
+            // Make clones of the original event with new start and end timestamps
+            const MAX_RECURRENCES: u16 = 100;
+            let result = rrule.all(MAX_RECURRENCES);
+            result
+                .dates
+                .iter()
+                .flat_map(|date| {
+                    let mut event_clone = event.clone();
+                    match (
+                        // TODO: Invoking to_event_date can be omitted, remove it
+                        event.get_start().map(to_event_date),
+                        event.get_end().map(to_event_date),
+                    ) {
+                        // Timestamps without time
+                        (
+                            Some(Some(EventDate::Date(start_date))),
+                            Some(Some(EventDate::Date(end_date))),
+                        ) => {
+                            let duration = end_date.signed_duration_since(start_date);
+                            let event_start = date.to_utc();
+                            let event_end = event_start + duration;
+                            event_clone.starts(DatePerhapsTime::Date(event_start.date_naive()));
+                            event_clone.ends(DatePerhapsTime::Date(event_end.date_naive()));
+                            vec![event_clone]
+                        }
+                        // Timestamps with time
+                        (
+                            Some(Some(EventDate::DateTimeUtc(start_date))),
+                            Some(Some(EventDate::DateTimeUtc(end_date))),
+                        ) => {
+                            let duration = end_date.signed_duration_since(start_date);
+                            let event_start = date.to_utc();
+                            let event_end = event_start + duration;
+                            event_clone.starts(DatePerhapsTime::DateTime(event_start.into()));
+                            event_clone.ends(DatePerhapsTime::DateTime(event_end.into()));
+                            vec![event_clone]
+                        }
+                        _ => {
+                            // Skip if event start and end are expressed in different format, or when parsing fails
+                            println!("warning: skipping event {:?} recurrence", event);
+                            vec![]
+                        }
+                    }
+                })
+                .collect()
+        })
+        // Filter past events out
         .filter(|event| {
             let current_time: DateTime<Local> = Local::now();
             match event.get_end().map(to_event_date) {
@@ -162,6 +235,22 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
                     }
                     EventDate::DateTimeUtc(end_time) => {
                         current_time.timestamp() <= end_time.timestamp()
+                    }
+                },
+                _ => false,
+            }
+        })
+        // Filter out events with start timestamp more than a year in the future
+        .filter(|event| {
+            let current_time: DateTime<Local> = Local::now();
+            let max_time: DateTime<Local> = current_time + Duration::from_secs(365 * 24 * 60 * 60);
+            match event.get_end().map(to_event_date) {
+                Some(Some(start_time)) => match start_time {
+                    EventDate::Date(start_date) => {
+                        max_time.num_days_from_ce() > start_date.num_days_from_ce()
+                    }
+                    EventDate::DateTimeUtc(start_time) => {
+                        max_time.timestamp() > start_time.timestamp()
                     }
                 },
                 _ => false,

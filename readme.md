@@ -1,11 +1,11 @@
 # Linkki-Web Api
 
-Dynamic content provider for [Linkki-web](https://github.com/linkkijkl/linkki-web).
-Hosted at [api.linkkijkl.fi](https://api.linkkijkl.fi).
+Dynamic content provider for [Linkki-web](https://github.com/linkkijkl/linkki-web),
+hosted at [api.linkkijkl.fi](https://api.linkkijkl.fi).
 
 ## Available endpoints
 ### [/events](https://api.linkkijkl.fi/events)
-Returns all upcoming events. The events are fetched from Linkki's publicly available event calendar, and are cached for 10 minutes.
+Returns all upcoming events from Linkki's publicly available event calendar. The returned events are ordered by their start timestamps and are cached for 10 minutes.
 
 The endpoint returns a JSON object comforming to the following schema:
 ```json
