@@ -240,6 +240,22 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
                 _ => false,
             }
         })
+        // Filter out events with start timestamp more than a year in the future
+        .filter(|event| {
+            let current_time: DateTime<Local> = Local::now();
+            let max_time: DateTime<Local> = current_time + Duration::from_secs(365 * 24 * 60 * 60);
+            match event.get_end().map(to_event_date) {
+                Some(Some(start_time)) => match start_time {
+                    EventDate::Date(start_date) => {
+                        max_time.num_days_from_ce() > start_date.num_days_from_ce()
+                    }
+                    EventDate::DateTimeUtc(start_time) => {
+                        max_time.timestamp() > start_time.timestamp()
+                    }
+                },
+                _ => false,
+            }
+        })
         .collect();
 
     event_components.sort_by_key(|event| {
