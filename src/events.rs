@@ -3,7 +3,7 @@ use std::str::FromStr;
 use crate::types::Error;
 use anyhow::anyhow;
 use cached::proc_macro::cached;
-use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use icalendar::{
     Calendar, CalendarComponent, CalendarDateTime, Component, DatePerhapsTime, EventLike,
@@ -181,8 +181,7 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
 
             // Make clones of the original event with new start and end timestamps
             const MAX_RECURRENCES: u16 = 100;
-            let result = rrule.all(MAX_RECURRENCES);
-            result
+            rrule.all(MAX_RECURRENCES)
                 .dates
                 .iter()
                 .flat_map(|date| {
@@ -197,11 +196,10 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
                             Some(Some(EventDate::Date(start_date))),
                             Some(Some(EventDate::Date(end_date))),
                         ) => {
-                            let duration = end_date.signed_duration_since(start_date);
-                            let event_start = date.to_utc();
-                            let event_end = event_start + duration;
-                            event_clone.starts(DatePerhapsTime::Date(event_start.date_naive()));
-                            event_clone.ends(DatePerhapsTime::Date(event_end.date_naive()));
+                            let duration = Days::new((start_date.num_days_from_ce() - end_date.num_days_from_ce()) as u64);
+                            let event_end = start_date + duration;
+                            event_clone.starts(DatePerhapsTime::Date(start_date));
+                            event_clone.ends(DatePerhapsTime::Date(event_end));
                             vec![event_clone]
                         }
                         // Timestamps with time
@@ -210,9 +208,8 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
                             Some(Some(EventDate::DateTimeUtc(end_date))),
                         ) => {
                             let duration = end_date.signed_duration_since(start_date);
-                            let event_start = date.to_utc();
-                            let event_end = event_start + duration;
-                            event_clone.starts(DatePerhapsTime::DateTime(event_start.into()));
+                            let event_end = start_date + duration;
+                            event_clone.starts(DatePerhapsTime::DateTime(start_date.into()));
                             event_clone.ends(DatePerhapsTime::DateTime(event_end.into()));
                             vec![event_clone]
                         }
@@ -223,6 +220,7 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
                         }
                     }
                 })
+
                 .collect()
         })
         // Filter past events out
