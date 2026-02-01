@@ -3,7 +3,7 @@ RUN apk add --no-cache build-base openssl-dev
 WORKDIR /app
 
 # Builder
-#RUN rustup default nightly
+RUN rustup default nightly
 ENV RUSTFLAGS="-C target-feature=-crt-static"
 COPY Cargo.lock Cargo.toml .
 COPY src src

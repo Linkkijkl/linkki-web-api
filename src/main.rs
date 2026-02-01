@@ -1,3 +1,5 @@
+#![feature(assert_matches)]
+
 use serde::Serialize;
 use std::convert::Infallible;
 use warp::Filter;
