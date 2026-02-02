@@ -187,8 +187,8 @@ fn data_to_events(
                             Some(Some(EventDate::Date(original_end_date))),
                         ) => {
                             let duration = Days::new(
-                                (original_start_date.num_days_from_ce()
-                                    - original_end_date.num_days_from_ce())
+                                (original_end_date.num_days_from_ce()
+                                    - original_start_date.num_days_from_ce())
                                     as u64,
                             );
                             let event_end = date.to_owned() + duration;
@@ -399,24 +399,7 @@ mod tests {
 
     #[test]
     fn test_event_parsing() {
-        let calendar_data: &'static str = r#"BEGIN:VCALENDAR
-PRODID:-//Mozilla.org/NONSGML Mozilla Calendar V1.1//EN
-VERSION:2.0
-NAME:Test Calendar
-X-WR-CALNAME:Test Calendar
-BEGIN:VEVENT
-CREATED:20260201T160519Z
-LAST-MODIFIED:20260201T160619Z
-DTSTAMP:20260201T160619Z
-UID:ee5a0fb2-6f9d-437b-a529-ab501f48876b
-SUMMARY:Test Event
-DTSTART;VALUE=DATE:20260203
-DTEND;VALUE=DATE:20260204
-TRANSP:TRANSPARENT
-LOCATION:Test Location
-DESCRIPTION;ALTREP="data:text/html,Test%20description":Test description
-END:VEVENT
-END:VCALENDAR"#;
+        let calendar_data: &'static str = include_str!("test-data/basic.ics");
         let now = now();
         let calendar = Calendar::from_str(calendar_data).unwrap();
         let result = data_to_events(calendar, vec![], now).unwrap();
@@ -426,6 +409,54 @@ END:VCALENDAR"#;
             location: Some(Location{string: location_string, url: _}),
             start_iso8601: _,
             end_iso8601: _,
-        }] if summary == "Test Event" && description == "Test description" && location_string == "Test Location");
+        }] if summary == "Test Event"
+            && description == "Test description"
+            && location_string == "Test Location");
+    }
+
+    #[test]
+    fn test_recurrence_parsing() {
+        let calendar_data: &'static str = include_str!("test-data/recurrence.ics");
+        let now = now();
+        let calendar = Calendar::from_str(calendar_data).unwrap();
+        let result = data_to_events(calendar, vec![], now).unwrap();
+        //result.iter().for_each(|event| println!("{}", event.date)); // debug print
+        assert_matches!(
+            &result[..],
+            [
+                Event {
+                    summary,
+                    date: date1,
+                    location: None,
+                    description: None,
+                    ..
+                },
+                Event {
+                    date: date2,
+                    ..
+                },
+                Event {
+                    date: date3,
+                    ..
+                },
+                Event {
+                    date: date4,
+                    ..
+                },
+                Event {
+                    date: date5,
+                    ..
+                }, .. ,
+                Event {
+                    date: last_date,
+                    ..
+                }
+            ] if date1 == "02/02/2026" // Each event comforms correctly to recurrence rules
+                && date2 == "02/03/2026"
+                && date3 == "06/04/2026"
+                && date4 == "04/05/2026"
+                && date5 == "06/07/2026" // Skipped one event because of exclusion rules
+                && last_date == "04/01/2027" // The last returned date is not older than a year
+        )
     }
 }
