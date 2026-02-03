@@ -3,7 +3,7 @@ use std::str::FromStr;
 use crate::types::Error;
 use anyhow::anyhow;
 use cached::proc_macro::cached;
-use chrono::{DateTime, Datelike, Local, NaiveDate, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Days, Local, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
 use icalendar::{
     Calendar, CalendarComponent, CalendarDateTime, Component, DatePerhapsTime, EventLike,
@@ -15,21 +15,24 @@ use serde_with::skip_serializing_none;
 use std::time::Duration;
 use warp::{Filter, Reply, filters::BoxedFilter, reject};
 
-async fn fetch_calendar(calendar_url: &str) -> anyhow::Result<Calendar> {
+async fn fetch_calendar(calendar_url: &str) -> anyhow::Result<String> {
     let calendar_request = reqwest::get(calendar_url).await?;
-    let calendar_text = calendar_request.text().await?;
-    let calendar = Calendar::from_str(&calendar_text).map_err(|a| anyhow!(a))?;
-    Ok(calendar)
+    let calendar_data = calendar_request.text().await?;
+    Ok(calendar_data)
 }
 
-#[derive(Serialize, Clone)]
+fn process_calendar(calendar_data: String) -> anyhow::Result<Calendar> {
+    Calendar::from_str(&calendar_data).map_err(|a| anyhow!(a))
+}
+
+#[derive(Serialize, Clone, Debug)]
 struct Location {
     string: String,
     url: String,
 }
 
 #[skip_serializing_none]
-#[derive(Serialize, Clone)]
+#[derive(Serialize, Clone, Debug)]
 struct Event {
     summary: String,
     date: String,
@@ -79,12 +82,15 @@ struct Space {
     id: String,
 }
 
-async fn fetch_spaces() -> anyhow::Result<Vec<Space>> {
+async fn fetch_spaces() -> anyhow::Result<String> {
     let url: &'static str = "https://navi.jyu.fi/api/spaces";
     let request = reqwest::get(url).await?;
     let text_content = request.text().await?;
-    let json: serde_json::Value = serde_json::from_str(&text_content)?;
+    Ok(text_content)
+}
 
+fn parse_spaces(string: String) -> anyhow::Result<Vec<Space>> {
+    let json: serde_json::Value = serde_json::from_str(&string)?;
     let spaces = json["items"]
         .as_array()
         .ok_or_else(|| anyhow!("spaces are expressed in an unrecognized format"))?;
@@ -124,28 +130,11 @@ fn url_for_location(location: &str, spaces: &Vec<Space>) -> String {
     )
 }
 
-#[cached(
-    time = 600,
-    time_refresh = true,
-    sync_writes = "default",
-    result = true
-)]
-async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
-    let calendar_result = fetch_calendar(
-        "https://calendar.google.com/calendar/ical/c_g2eqt2a7u1fc1pahe2o0ecm7as%40group.calendar.google.com/public/basic.ics"
-    ).await;
-    let calendar = match calendar_result {
-        Ok(calendar) => calendar,
-        Err(err) => {
-            return Err(reject::custom(Error {
-                message: "The remote calendar could not be processed.".to_string(),
-                details: Some(format! {"{:?}", err}),
-            }));
-        }
-    };
-
-    let spaces = fetch_spaces().await.unwrap_or_default();
-
+fn data_to_events(
+    calendar: Calendar,
+    spaces: Vec<Space>,
+    current_time: DateTime<Utc>,
+) -> Result<Vec<Event>, warp::Rejection> {
     let mut event_components: Vec<icalendar::Event> = calendar
         .iter()
         // Filter out components other than of type event
@@ -181,8 +170,8 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
 
             // Make clones of the original event with new start and end timestamps
             const MAX_RECURRENCES: u16 = 100;
-            let result = rrule.all(MAX_RECURRENCES);
-            result
+            rrule
+                .all(MAX_RECURRENCES)
                 .dates
                 .iter()
                 .flat_map(|date| {
@@ -194,30 +183,39 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
                     ) {
                         // Timestamps without time
                         (
-                            Some(Some(EventDate::Date(start_date))),
-                            Some(Some(EventDate::Date(end_date))),
+                            Some(Some(EventDate::Date(original_start_date))),
+                            Some(Some(EventDate::Date(original_end_date))),
                         ) => {
-                            let duration = end_date.signed_duration_since(start_date);
-                            let event_start = date.to_utc();
-                            let event_end = event_start + duration;
-                            event_clone.starts(DatePerhapsTime::Date(event_start.date_naive()));
+                            let duration = Days::new(
+                                (original_end_date.num_days_from_ce()
+                                    - original_start_date.num_days_from_ce())
+                                    as u64,
+                            );
+                            let event_end = date.to_owned() + duration;
+                            event_clone.starts(DatePerhapsTime::Date(date.date_naive()));
                             event_clone.ends(DatePerhapsTime::Date(event_end.date_naive()));
                             vec![event_clone]
                         }
                         // Timestamps with time
                         (
-                            Some(Some(EventDate::DateTimeUtc(start_date))),
-                            Some(Some(EventDate::DateTimeUtc(end_date))),
+                            Some(Some(EventDate::DateTimeUtc(original_start_date))),
+                            Some(Some(EventDate::DateTimeUtc(original_end_date))),
                         ) => {
-                            let duration = end_date.signed_duration_since(start_date);
-                            let event_start = date.to_utc();
-                            let event_end = event_start + duration;
-                            event_clone.starts(DatePerhapsTime::DateTime(event_start.into()));
-                            event_clone.ends(DatePerhapsTime::DateTime(event_end.into()));
+                            let duration =
+                                original_end_date.signed_duration_since(original_start_date);
+                            let event_end = *date + duration;
+                            let event_end_utc =
+                                DateTime::<Utc>::from_timestamp(event_end.timestamp(), 0).unwrap();
+                            let event_start = date;
+                            let event_start_utc =
+                                DateTime::<Utc>::from_timestamp(event_start.timestamp(), 0)
+                                    .unwrap();
+                            event_clone.starts(DatePerhapsTime::DateTime(event_start_utc.into()));
+                            event_clone.ends(DatePerhapsTime::DateTime(event_end_utc.into()));
                             vec![event_clone]
                         }
                         _ => {
-                            // Skip if event start and end are expressed in different format, or when parsing fails
+                            // Skip if event start and end are expressed in differing formats, or when parsing fails
                             println!("warning: skipping event {:?} recurrence", event);
                             vec![]
                         }
@@ -227,7 +225,7 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
         })
         // Filter past events out
         .filter(|event| {
-            let current_time: DateTime<Local> = Local::now();
+            //let current_time: DateTime<Local> = Local::now();
             match event.get_end().map(to_event_date) {
                 Some(Some(end_time)) => match end_time {
                     EventDate::Date(end_date) => {
@@ -242,8 +240,7 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
         })
         // Filter out events with start timestamp more than a year in the future
         .filter(|event| {
-            let current_time: DateTime<Local> = Local::now();
-            let max_time: DateTime<Local> = current_time + Duration::from_secs(365 * 24 * 60 * 60);
+            let max_time: DateTime<Utc> = current_time + Duration::from_secs(365 * 24 * 60 * 60);
             match event.get_end().map(to_event_date) {
                 Some(Some(start_time)) => match start_time {
                     EventDate::Date(start_date) => {
@@ -263,7 +260,7 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
             Some(Some(end_time)) => {
                 match end_time {
                     EventDate::Date(end_date) => {
-                        let end_date_local = Local
+                        let end_date_local = Utc
                             .with_ymd_and_hms(
                                 end_date.year(),
                                 end_date.month(),
@@ -334,7 +331,7 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
                         )
                     }
                 }
-                // Skip if event start and end are expressed in different format, or when parsing fails
+                // Skip if event start and end are expressed in differing formats, or when parsing fails
                 _ => return vec![],
             };
 
@@ -357,6 +354,29 @@ async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
     Ok(events)
 }
 
+#[cached(
+    time = 600,
+    time_refresh = true,
+    sync_writes = "default",
+    result = true
+)]
+async fn get_events() -> Result<Vec<Event>, warp::Rejection> {
+    let spaces_data = fetch_spaces().await.unwrap_or_default();
+    let spaces = parse_spaces(spaces_data).unwrap_or_default();
+    let calendar_data = fetch_calendar("https://calendar.google.com/calendar/ical/c_g2eqt2a7u1fc1pahe2o0ecm7as%40group.calendar.google.com/public/basic.ics").await.unwrap_or_default();
+    let calendar = match process_calendar(calendar_data) {
+        Ok(calendar) => calendar,
+        Err(err) => {
+            return Err(reject::custom(Error {
+                message: "The remote calendar could not be processed.".to_string(),
+                details: Some(format! {"{:?}", err}),
+            }));
+        }
+    };
+    let now = Utc::now();
+    data_to_events(calendar, spaces, now)
+}
+
 async fn events() -> Result<impl Reply, warp::Rejection> {
     let events = get_events().await?;
     let json = warp::reply::json(&events);
@@ -365,4 +385,78 @@ async fn events() -> Result<impl Reply, warp::Rejection> {
 
 pub fn filter() -> BoxedFilter<(impl Reply,)> {
     warp::path("events").and_then(events).boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::assert_matches;
+
+    use super::*;
+
+    fn now() -> DateTime<Utc> {
+        Utc.with_ymd_and_hms(2026, 2, 2, 16, 32, 11).unwrap()
+    }
+
+    #[test]
+    fn test_event_parsing() {
+        let calendar_data: &'static str = include_str!("test-data/basic.ics");
+        let now = now();
+        let calendar = Calendar::from_str(calendar_data).unwrap();
+        let result = data_to_events(calendar, vec![], now).unwrap();
+        assert_matches!(&result[..], [Event {
+            summary, description: Some(description),
+            date: _,
+            location: Some(Location{string: location_string, url: _}),
+            start_iso8601: _,
+            end_iso8601: _,
+        }] if summary == "Test Event"
+            && description == "Test description"
+            && location_string == "Test Location");
+    }
+
+    #[test]
+    fn test_recurrence_parsing() {
+        let calendar_data: &'static str = include_str!("test-data/recurrence.ics");
+        let now = now();
+        let calendar = Calendar::from_str(calendar_data).unwrap();
+        let result = data_to_events(calendar, vec![], now).unwrap();
+        //result.iter().for_each(|event| println!("{}", event.date)); // debug print
+        assert_matches!(
+            &result[..],
+            [
+                Event {
+                    summary,
+                    date: date1,
+                    location: None,
+                    description: None,
+                    ..
+                },
+                Event {
+                    date: date2,
+                    ..
+                },
+                Event {
+                    date: date3,
+                    ..
+                },
+                Event {
+                    date: date4,
+                    ..
+                },
+                Event {
+                    date: date5,
+                    ..
+                }, .. ,
+                Event {
+                    date: last_date,
+                    ..
+                }
+            ] if date1 == "02/02/2026" // Each event comforms correctly to recurrence rules
+                && date2 == "02/03/2026"
+                && date3 == "06/04/2026"
+                && date4 == "04/05/2026"
+                && date5 == "06/07/2026" // Skipped one event because of exclusion rules
+                && last_date == "04/01/2027" // The last returned date is not older than a year
+        )
+    }
 }
