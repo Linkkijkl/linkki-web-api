@@ -229,7 +229,7 @@ fn data_to_events(
             match event.get_end().map(to_event_date) {
                 Some(Some(end_time)) => match end_time {
                     EventDate::Date(end_date) => {
-                        current_time.num_days_from_ce() <= end_date.num_days_from_ce()
+                        current_time.num_days_from_ce() < end_date.num_days_from_ce()
                     }
                     EventDate::DateTimeUtc(end_time) => {
                         current_time.timestamp() <= end_time.timestamp()
